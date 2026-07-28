@@ -12,136 +12,315 @@ from sheets import save_client
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-NAME, PHONE = range(2)
+# ============================================================
+# CONFIG — всё, что меняется под нового клиента, ТОЛЬКО ЗДЕСЬ.
+# Ниже этого блока логику трогать не нужно.
+# ============================================================
+CONFIG = {
+    "salon_name": "Glamour",
+    "address": "ул. Ленина, 45, г. Новосибирск",
+    "phone": "+7 (383) 123-45-67",
+    "hours": (
+        "Пн-Пт: 9:00 - 21:00\n"
+        "Сб-Вс: 10:00 - 20:00"
+    ),
+    # Услуги: название -> цена. Порядок сохраняется, кнопки строятся автоматически.
+    "services": {
+        "Стрижка женская": "от 1500 руб",
+        "Стрижка мужская": "от 800 руб",
+        "Окрашивание волос": "от 3000 руб",
+        "Маникюр": "от 1200 руб",
+        "Педикюр": "от 1500 руб",
+        "Наращивание ресниц": "от 2000 руб",
+        "Чистка лица": "от 2500 руб",
+    },
+    # Даты и время для записи — тоже кнопками.
+    "dates": ["Сегодня", "Завтра", "Послезавтра"],
+    "times": ["10:00", "12:00", "14:00", "16:00", "18:00", "20:00"],
+    # ID владельца в Telegram — сюда падают заявки.
+    "owner_id": 1782965914,
+}
+# ============================================================
+
+
+# Состояния диалога записи
+SERVICE, DATE, TIME, NAME, PHONE = range(5)
+
+# Слова, по которым клиент в любой момент выходит из записи в меню
+CANCEL_WORDS = ["передумал", "отмена", "отменить", "назад", "меню", "стоп", "❌ отмена"]
+
 user_data_temp = {}
+
+
+def main_menu_markup():
+    keyboard = [
+        ["💅 Услуги и цены", "🕐 Время работы"],
+        ["📍 Адрес", "✍️ Записаться"],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def buttons_markup(items, per_row=2, add_cancel=True):
+    """Строит клавиатуру из списка строк по per_row в ряд + кнопка отмены."""
+    rows = [items[i:i + per_row] for i in range(0, len(items), per_row)]
+    if add_cancel:
+        rows.append(["❌ Отмена"])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def is_cancel(text: str) -> bool:
+    return any(w in text.lower() for w in CANCEL_WORDS)
+
+
+async def back_to_menu(update: Update, message: str):
+    await update.message.reply_text(message, reply_markup=main_menu_markup())
+    return ConversationHandler.END
+
+
+# ------------------- Команды и справочные кнопки -------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     reset_chat(user.id)
-    keyboard = [
-        ["💅 Услуги и цены", "🕐 Время работы"],
-        ["📍 Адрес", "✍️ Записаться"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    user_data_temp.pop(user.id, None)
     await update.message.reply_text(
         f"Добрый день, {user.first_name}! 👋\n"
-        "Я администратор салона красоты *Glamour*.\n"
+        f"Я администратор салона красоты *{CONFIG['salon_name']}*.\n"
         "Чем могу помочь?",
         parse_mode="Markdown",
-        reply_markup=reply_markup
+        reply_markup=main_menu_markup(),
     )
     return ConversationHandler.END
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Справочные кнопки и свободный чат. Запись сюда НЕ входит (у неё свой entry_point)."""
     user = update.effective_user
-    text = update.message.text
+    text = update.message.text.lower()
 
-    booking_keywords = ["записаться", "запись", "хочу записаться", "✍️ записаться"]
-    if any(kw in text.lower() for kw in booking_keywords):
-        await update.message.reply_text("Отлично! Давайте оформим запись 📝\n\nКак вас зовут?")
-        return NAME
+    if "услуги" in text or "цены" in text:
+        lines = "\n".join(f"- {name}: {price}" for name, price in CONFIG["services"].items())
+        await update.message.reply_text(f"💅 Наши услуги и цены:\n\n{lines}")
+        return
 
-    if "услуги" in text.lower() or "цены" in text.lower():
-        await update.message.reply_text(
-            "💅 Наши услуги и цены:\n\n"
-            "- Стрижка женская: от 1500 руб\n"
-            "- Стрижка мужская: от 800 руб\n"
-            "- Окрашивание волос: от 3000 руб\n"
-            "- Маникюр: от 1200 руб\n"
-            "- Педикюр: от 1500 руб\n"
-            "- Наращивание ресниц: от 2000 руб\n"
-            "- Чистка лица: от 2500 руб"
-        )
-        return ConversationHandler.END
+    if "время" in text or "работы" in text or "часы" in text:
+        await update.message.reply_text(f"🕐 Время работы нашего салона:\n\n{CONFIG['hours']}")
+        return
 
-    if "время" in text.lower() or "работы" in text.lower() or "часы" in text.lower():
-        await update.message.reply_text(
-            "🕐 Время работы нашего салона:\n\n"
-            "Пн-Пт: 9:00 - 21:00\n"
-            "Сб-Вс: 10:00 - 20:00"
-        )
-        return ConversationHandler.END
+    if "адрес" in text:
+        await update.message.reply_text(f"📍 Наш адрес: {CONFIG['address']}.\n\nЖдём вас!")
+        return
 
-    if "адрес" in text.lower():
-        await update.message.reply_text(
-            "📍 Наш адрес: ул. Ленина, 45, г. Новосибирск.\n\nЖдём вас!"
-        )
-        return ConversationHandler.END
-
+    # Всё остальное — свободный чат через AI
     await update.message.chat.send_action("typing")
-    response = ask_gemini(user.id, text)
+    response = ask_gemini(user.id, update.message.text)
     await update.message.reply_text(response)
-    return ConversationHandler.END
+
+
+# ------------------- Диалог записи: 4 шага -------------------
+
+async def booking_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_data_temp[user.id] = {}
+    services = list(CONFIG["services"].keys())
+    await update.message.reply_text(
+        "Отлично! Давайте оформим запись 📝\n\n"
+        "Выберите услугу:",
+        reply_markup=buttons_markup(services, per_row=2),
+    )
+    return SERVICE
+
+
+async def get_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if is_cancel(text):
+        user_data_temp.pop(update.effective_user.id, None)
+        return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+
+    # Принимаем только реальную услугу из списка
+    if text not in CONFIG["services"]:
+        services = list(CONFIG["services"].keys())
+        await update.message.reply_text(
+            "Пожалуйста, выберите услугу кнопкой ниже 👇",
+            reply_markup=buttons_markup(services, per_row=2),
+        )
+        return SERVICE
+
+    user_data_temp[update.effective_user.id]["service"] = text
+    await update.message.reply_text(
+        f"Записываю на «{text}». Выберите дату:",
+        reply_markup=buttons_markup(CONFIG["dates"], per_row=3),
+    )
+    return DATE
+
+
+async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if is_cancel(text):
+        user_data_temp.pop(update.effective_user.id, None)
+        return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+
+    if text not in CONFIG["dates"]:
+        await update.message.reply_text(
+            "Пожалуйста, выберите дату кнопкой 👇",
+            reply_markup=buttons_markup(CONFIG["dates"], per_row=3),
+        )
+        return DATE
+
+    user_data_temp[update.effective_user.id]["date"] = text
+    await update.message.reply_text(
+        "Выберите удобное время:",
+        reply_markup=buttons_markup(CONFIG["times"], per_row=3),
+    )
+    return TIME
+
+
+async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if is_cancel(text):
+        user_data_temp.pop(update.effective_user.id, None)
+        return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+
+    if text not in CONFIG["times"]:
+        await update.message.reply_text(
+            "Пожалуйста, выберите время кнопкой 👇",
+            reply_markup=buttons_markup(CONFIG["times"], per_row=3),
+        )
+        return TIME
+
+    user_data_temp[update.effective_user.id]["time"] = text
+    await update.message.reply_text(
+        "Отлично! Как вас зовут?",
+        reply_markup=buttons_markup([], add_cancel=True),  # только кнопка отмены
+    )
+    return NAME
+
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_temp[update.effective_user.id] = {"name": update.message.text}
-    keyboard = [[KeyboardButton("📱 Отправить мой номер", request_contact=True)]]
+    text = update.message.text
+    if is_cancel(text):
+        user_data_temp.pop(update.effective_user.id, None)
+        return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+
+    user_data_temp[update.effective_user.id]["name"] = text
+    keyboard = [
+        [KeyboardButton("📱 Отправить мой номер", request_contact=True)],
+        ["❌ Отмена"],
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
-        f"Приятно познакомиться, {update.message.text}! 😊\n\nТеперь укажите ваш номер телефона:",
-        reply_markup=reply_markup
+        f"Приятно познакомиться, {text}! 😊\n\n"
+        "Теперь укажите ваш номер телефона (или нажмите кнопку ниже):",
+        reply_markup=reply_markup,
     )
     return PHONE
 
+
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+
     if update.message.contact:
         phone = update.message.contact.phone_number
     else:
-        phone = update.message.text
-    name = user_data_temp.get(user.id, {}).get("name", "Неизвестно")
+        text = update.message.text
+        if is_cancel(text):
+            user_data_temp.pop(user.id, None)
+            return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+        phone = text
+
+    data = user_data_temp.get(user.id, {})
+    name = data.get("name", "Неизвестно")
+    service = data.get("service", "—")
+    date = data.get("date", "—")
+    time = data.get("time", "—")
     username = f"@{user.username}" if user.username else ""
-    saved = save_client(name, phone, username)
-    keyboard = [
-        ["💅 Услуги и цены", "🕐 Время работы"],
-        ["📍 Адрес", "✍️ Записаться"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    # Сохраняем в Google Sheets. Порядок аргументов — как в старом sheets.py.
+    # Услугу/дату/время дописываем в поле имени, чтобы не менять save_client.
+    full_name = f"{name} | {service} | {date} {time}"
+    saved = save_client(full_name, phone, username)
+
+    # Уведомление владельцу в Telegram
+    await notify_owner(context, name, phone, service, date, time, username)
+
     if saved:
         await update.message.reply_text(
-            "✅ Отлично! Мы свяжемся с вами в ближайшее время для подтверждения записи.\n\n"
-            "Если появятся вопросы — спрашивайте! 😊",
-            reply_markup=reply_markup
+            f"✅ Готово! Вы записаны:\n\n"
+            f"💅 {service}\n"
+            f"📅 {date}, {time}\n"
+            f"👤 {name}\n\n"
+            "Мы свяжемся с вами для подтверждения. Если появятся вопросы — спрашивайте! 😊",
+            reply_markup=main_menu_markup(),
         )
     else:
         await update.message.reply_text(
-            "Спасибо! Для связи с нами позвоните: +7 (383) 123-45-67",
-            reply_markup=reply_markup
+            f"Запись принята! Для связи с нами позвоните: {CONFIG['phone']}",
+            reply_markup=main_menu_markup(),
         )
+
     user_data_temp.pop(user.id, None)
     reset_chat(user.id)
     return ConversationHandler.END
 
+
+async def notify_owner(context, name, phone, service, date, time, username):
+    """Отправляет готовую заявку владельцу в Telegram."""
+    try:
+        text = (
+            "🔔 *Новая запись!*\n\n"
+            f"👤 Имя: {name}\n"
+            f"📞 Телефон: {phone}\n"
+            f"💅 Услуга: {service}\n"
+            f"📅 Дата: {date}\n"
+            f"🕐 Время: {time}\n"
+        )
+        if username:
+            text += f"💬 Telegram: {username}\n"
+        await context.bot.send_message(
+            chat_id=CONFIG["owner_id"], text=text, parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить уведомление владельцу: {e}")
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        ["💅 Услуги и цены", "🕐 Время работы"],
-        ["📍 Адрес", "✍️ Записаться"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("Хорошо, если нужна помощь — спрашивайте!", reply_markup=reply_markup)
-    return ConversationHandler.END
+    user_data_temp.pop(update.effective_user.id, None)
+    return await back_to_menu(update, "Хорошо, если нужна помощь — спрашивайте!")
+
 
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
-    conv_handler = ConversationHandler(
+
+    booking_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+            MessageHandler(filters.Regex(r"(?i)запис"), booking_start),
         ],
         states={
+            SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_service)],
+            DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
+            TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             PHONE: [
                 MessageHandler(filters.CONTACT, get_phone),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start),
+        ],
         per_user=True,
-        allow_reentry=True
+        allow_reentry=True,
     )
-    app.add_handler(conv_handler)
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(booking_conv)
+    # Справочные кнопки и свободный чат — вне диалога записи
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     print("🤖 Бот запущен...")
     app.run_polling(drop_pending_updates=True, timeout=30)
+
 
 if __name__ == "__main__":
     main()
