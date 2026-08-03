@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -50,6 +51,21 @@ SERVICE, DATE, TIME, NAME, PHONE = range(5)
 CANCEL_WORDS = ["передумал", "отмена", "отменить", "назад", "меню", "стоп", "❌ отмена"]
 
 user_data_temp = {}
+
+
+def available_times(date_text: str):
+    """Для 'Сегодня' показываем только те слоты, которые ещё не прошли."""
+    times = CONFIG["times"]
+    if date_text != "Сегодня":
+        return times
+
+    now = datetime.now()
+    result = []
+    for t in times:
+        hour, minute = map(int, t.split(":"))
+        if (hour, minute) > (now.hour, now.minute):
+            result.append(t)
+    return result
 
 
 def main_menu_markup():
@@ -168,9 +184,19 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DATE
 
     user_data_temp[update.effective_user.id]["date"] = text
+
+    times = available_times(text)
+    if not times:
+        await update.message.reply_text(
+            "На сегодня свободных окон уже нет 😔\n"
+            "Выберите, пожалуйста, другую дату:",
+            reply_markup=buttons_markup(CONFIG["dates"], per_row=3),
+        )
+        return DATE
+
     await update.message.reply_text(
         "Выберите удобное время:",
-        reply_markup=buttons_markup(CONFIG["times"], per_row=3),
+        reply_markup=buttons_markup(times, per_row=3),
     )
     return TIME
 
@@ -181,10 +207,13 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data_temp.pop(update.effective_user.id, None)
         return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
 
-    if text not in CONFIG["times"]:
+    date_text = user_data_temp.get(update.effective_user.id, {}).get("date", "")
+    times = available_times(date_text)
+
+    if text not in times:
         await update.message.reply_text(
             "Пожалуйста, выберите время кнопкой 👇",
-            reply_markup=buttons_markup(CONFIG["times"], per_row=3),
+            reply_markup=buttons_markup(times, per_row=3),
         )
         return TIME
 
