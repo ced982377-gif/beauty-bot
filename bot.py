@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -8,7 +8,7 @@ from telegram.ext import (
     filters, ContextTypes, ConversationHandler
 )
 from gemini import ask_gemini, reset_chat
-from sheets import save_client
+from sheets import save_client, get_booked_times
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -55,19 +55,29 @@ CANCEL_WORDS = ["передумал", "отмена", "отменить", "на�
 user_data_temp = {}
 
 
-def available_times(date_text: str):
-    """Для 'Сегодня' показываем только те слоты, которые ещё не прошли."""
-    times = CONFIG["times"]
-    if date_text != "Сегодня":
-        return times
+def resolve_date(date_text: str) -> str:
+    """'Сегодня' -> '10.08.2026'. В таблице храним календарную дату,
+    иначе вчерашнее 'Завтра' и сегодняшнее 'Сегодня' не различить."""
+    offsets = {"Сегодня": 0, "Завтра": 1, "Послезавтра": 2}
+    days = offsets.get(date_text, 0)
+    return (datetime.now() + timedelta(days=days)).strftime("%d.%m.%Y")
 
-    now = datetime.now()
-    result = []
-    for t in times:
-        hour, minute = map(int, t.split(":"))
-        if (hour, minute) > (now.hour, now.minute):
-            result.append(t)
-    return result
+
+def available_times(date_text: str):
+    """Свободные слоты: убираем прошедшие (для сегодня) и уже занятые."""
+    times = CONFIG["times"]
+
+    # 1. Отсекаем прошедшее время, если запись на сегодня
+    if date_text == "Сегодня":
+        now = datetime.now()
+        times = [
+            t for t in times
+            if tuple(map(int, t.split(":"))) > (now.hour, now.minute)
+        ]
+
+    # 2. Убираем занятые слоты по данным таблицы
+    booked = get_booked_times(resolve_date(date_text))
+    return [t for t in times if t not in booked]
 
 
 def main_menu_markup():
@@ -187,10 +197,12 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data_temp[update.effective_user.id]["date"] = text
 
+    await update.message.chat.send_action("typing")   # читаем таблицу, это пара секунд
     times = available_times(text)
+
     if not times:
         await update.message.reply_text(
-            "На сегодня свободных окон уже нет 😔\n"
+            f"На «{text}» свободных окон уже нет 😔\n"
             "Выберите, пожалуйста, другую дату:",
             reply_markup=buttons_markup(CONFIG["dates"], per_row=3),
         )
@@ -213,8 +225,16 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     times = available_times(date_text)
 
     if text not in times:
+        # Либо нажал не ту кнопку, либо слот заняли, пока он думал
+        if not times:
+            await update.message.reply_text(
+                "Похоже, все окна на эту дату только что разобрали 😔\n"
+                "Выберите другую дату:",
+                reply_markup=buttons_markup(CONFIG["dates"], per_row=3),
+            )
+            return DATE
         await update.message.reply_text(
-            "Пожалуйста, выберите время кнопкой 👇",
+            "Это время уже занято. Выберите, пожалуйста, из свободных 👇",
             reply_markup=buttons_markup(times, per_row=3),
         )
         return TIME
@@ -288,15 +308,13 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source = data.get("source", "—")
     username = f"@{user.username}" if user.username else ""
 
-    # Сохраняем в Google Sheets. Порядок аргументов — как в старом sheets.py.
-    # Услугу/дату/время/источник дописываем в поле имени, чтобы не менять save_client.
-    saved = save_client(name, phone, username, service, date, time, source)
+    # В таблицу пишем календарную дату — по ней считаем занятость
+    real_date = resolve_date(date)
+
+    saved = save_client(name, phone, username, service, real_date, time, source)
 
     # Уведомление владельцу в Telegram
-    await notify_owner(context, name, phone, service, date, time, username, source)
-
-    # Уведомление владельцу в Telegram
-    await notify_owner(context, name, phone, service, date, time, username, source)
+    await notify_owner(context, name, phone, service, date, real_date, time, username, source)
 
     if saved:
         await update.message.reply_text(
@@ -318,7 +336,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def notify_owner(context, name, phone, service, date, time, username, source="—"):
+async def notify_owner(context, name, phone, service, date, real_date, time, username, source="—"):
     """Отправляет готовую заявку владельцу в Telegram."""
     try:
         text = (
@@ -326,7 +344,7 @@ async def notify_owner(context, name, phone, service, date, time, username, sour
             f"👤 Имя: {name}\n"
             f"📞 Телефон: {phone}\n"
             f"💅 Услуга: {service}\n"
-            f"📅 Дата: {date}\n"
+            f"📅 Дата: {date} ({real_date})\n"
             f"🕐 Время: {time}\n"
             f"📊 Источник: {source}\n"
         )
