@@ -221,7 +221,7 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data_temp[update.effective_user.id]["time"] = text
     await update.message.reply_text(
-        "Подскажите, откуда вы о нас узнали?",,
+        "Подскажите, откуда вы о нас узнали?",
         reply_markup=buttons_markup(CONFIG["sources"], per_row=2),
     )
     return SOURCE
