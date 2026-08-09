@@ -290,8 +290,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Сохраняем в Google Sheets. Порядок аргументов — как в старом sheets.py.
     # Услугу/дату/время/источник дописываем в поле имени, чтобы не менять save_client.
-    full_name = f"{name} | {service} | {date} {time} | Источник: {source}"
-    saved = save_client(full_name, phone, username)
+saved = save_client(name, phone, username, service, date, time, source)
 
     # Уведомление владельцу в Telegram
     await notify_owner(context, name, phone, service, date, time, username, source)
