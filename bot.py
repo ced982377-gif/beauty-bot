@@ -38,6 +38,8 @@ CONFIG = {
     # Даты и время для записи — тоже кнопками.
     "dates": ["Сегодня", "Завтра", "Послезавтра"],
     "times": ["10:00", "12:00", "14:00", "16:00", "18:00", "20:00"],
+    # Откуда клиент узнал о салоне — кнопки на шаге записи.
+    "sources": ["2ГИС", "Яндекс.Карты", "Проходил мимо", "Посоветовали", "Акция"],
     # ID владельца в Telegram — сюда падают заявки.
     "owner_id": 1782965914,
 }
@@ -45,7 +47,7 @@ CONFIG = {
 
 
 # Состояния диалога записи
-SERVICE, DATE, TIME, NAME, PHONE = range(5)
+SERVICE, DATE, TIME, SOURCE, NAME, PHONE = range(6)
 
 # Слова, по которым клиент в любой момент выходит из записи в меню
 CANCEL_WORDS = ["передумал", "отмена", "отменить", "назад", "меню", "стоп", "❌ отмена"]
@@ -133,7 +135,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 
-# ------------------- Диалог записи: 4 шага -------------------
+# ------------------- Диалог записи: 5 шагов -------------------
 
 async def booking_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -219,7 +221,28 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data_temp[update.effective_user.id]["time"] = text
     await update.message.reply_text(
-        "Отлично! Как вас зовут?",
+        "И последний момент — откуда вы о нас узнали?",
+        reply_markup=buttons_markup(CONFIG["sources"], per_row=2),
+    )
+    return SOURCE
+
+
+async def get_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if is_cancel(text):
+        user_data_temp.pop(update.effective_user.id, None)
+        return await back_to_menu(update, "Хорошо, запись отменена. Если что — я здесь! 😊")
+
+    if text not in CONFIG["sources"]:
+        await update.message.reply_text(
+            "Выберите, пожалуйста, кнопкой 👇",
+            reply_markup=buttons_markup(CONFIG["sources"], per_row=2),
+        )
+        return SOURCE
+
+    user_data_temp[update.effective_user.id]["source"] = text
+    await update.message.reply_text(
+        "Спасибо! Как вас зовут?",
         reply_markup=buttons_markup([], add_cancel=True),  # только кнопка отмены
     )
     return NAME
@@ -262,15 +285,16 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = data.get("service", "—")
     date = data.get("date", "—")
     time = data.get("time", "—")
+    source = data.get("source", "—")
     username = f"@{user.username}" if user.username else ""
 
     # Сохраняем в Google Sheets. Порядок аргументов — как в старом sheets.py.
-    # Услугу/дату/время дописываем в поле имени, чтобы не менять save_client.
-    full_name = f"{name} | {service} | {date} {time}"
+    # Услугу/дату/время/источник дописываем в поле имени, чтобы не менять save_client.
+    full_name = f"{name} | {service} | {date} {time} | Источник: {source}"
     saved = save_client(full_name, phone, username)
 
     # Уведомление владельцу в Telegram
-    await notify_owner(context, name, phone, service, date, time, username)
+    await notify_owner(context, name, phone, service, date, time, username, source)
 
     if saved:
         await update.message.reply_text(
@@ -292,7 +316,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def notify_owner(context, name, phone, service, date, time, username):
+async def notify_owner(context, name, phone, service, date, time, username, source="—"):
     """Отправляет готовую заявку владельцу в Telegram."""
     try:
         text = (
@@ -302,6 +326,7 @@ async def notify_owner(context, name, phone, service, date, time, username):
             f"💅 Услуга: {service}\n"
             f"📅 Дата: {date}\n"
             f"🕐 Время: {time}\n"
+            f"📊 Источник: {source}\n"
         )
         if username:
             text += f"💬 Telegram: {username}\n"
@@ -328,6 +353,7 @@ def main():
             SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_service)],
             DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
             TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
+            SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_source)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             PHONE: [
                 MessageHandler(filters.CONTACT, get_phone),
